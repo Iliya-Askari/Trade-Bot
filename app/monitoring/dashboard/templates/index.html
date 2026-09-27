@@ -34,6 +34,49 @@
             <h3>Recent Signals</h3>
             <p>No active signals.</p>
         </div>
+        <div class="card">
+            <h3>Settings (Version 2)</h3>
+            <div style="margin-bottom: 15px;">
+                <h4>MetaTrader 5 Connection</h4>
+                <input type="text" id="mt5_login" placeholder="Login ID" style="margin-bottom: 5px; width: 100%;"><br>
+                <input type="password" id="mt5_password" placeholder="Password" style="margin-bottom: 5px; width: 100%;"><br>
+                <input type="text" id="mt5_server" placeholder="Server" style="margin-bottom: 5px; width: 100%;"><br>
+                <button onclick="updateMT5()" style="padding: 5px 10px; cursor: pointer;">Connect MT5</button>
+            </div>
+
+            <div>
+                <h4>Trading Symbol</h4>
+                <input type="text" id="trade_symbol" placeholder="e.g. EURUSD" style="margin-bottom: 5px; width: 100%;"><br>
+                <button onclick="updateSymbol()" style="padding: 5px 10px; cursor: pointer;">Set Symbol</button>
+            </div>
+        </div>
     </div>
+
+    <script>
+        async function updateMT5() {
+            const login = document.getElementById('mt5_login').value;
+            const password = document.getElementById('mt5_password').value;
+            const server = document.getElementById('mt5_server').value;
+
+            const res = await fetch('/api/config/mt5', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ login: parseInt(login), password, server })
+            });
+            const data = await res.json();
+            alert(data.message);
+        }
+
+        async function updateSymbol() {
+            const symbol = document.getElementById('trade_symbol').value;
+            const res = await fetch('/api/config/symbol', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol })
+            });
+            const data = await res.json();
+            alert(data.message);
+        }
+    </script>
 </body>
 </html>

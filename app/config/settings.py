@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     BROKER_API_KEY: Optional[str] = None
     BROKER_API_SECRET: Optional[str] = None
 
+    # MT5 Config
+    MT5_LOGIN: Optional[int] = None
+    MT5_PASSWORD: Optional[str] = None
+    MT5_SERVER: Optional[str] = None
+    DEFAULT_SYMBOL: str = "EURUSD"
+
     # Trading Config
     TRADING_MODE: str = "PAPER_TRADING"
     MAX_RISK_PER_TRADE: float = 0.01
