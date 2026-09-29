@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     MT5_LOGIN: Optional[int] = None
     MT5_PASSWORD: Optional[str] = None
     MT5_SERVER: Optional[str] = None
-    DEFAULT_SYMBOL: str = "EURUSD"
+    DEFAULT_SYMBOL: str = "XAUUSD"
 
     # Trading Config
     TRADING_MODE: str = "PAPER_TRADING"

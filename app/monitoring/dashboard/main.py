@@ -46,3 +46,41 @@ async def get_config():
         "MT5_SERVER": settings.MT5_SERVER,
         "DEFAULT_SYMBOL": settings.DEFAULT_SYMBOL
     }
+
+from app.database.session import SessionLocal
+from app.database.models import SystemEvent, Trade
+
+@dashboard_app.get("/api/logs")
+async def get_logs(limit: int = 20):
+    db = SessionLocal()
+    try:
+        events = db.query(SystemEvent).order_by(SystemEvent.timestamp.desc()).limit(limit).all()
+        return [
+            {
+                "timestamp": e.timestamp.isoformat(),
+                "level": e.level,
+                "module": e.module,
+                "message": e.message
+            } for e in events
+        ]
+    finally:
+        db.close()
+
+@dashboard_app.get("/api/trades")
+async def get_trades(limit: int = 10):
+    db = SessionLocal()
+    try:
+        trades = db.query(Trade).order_by(Trade.created_at.desc()).limit(limit).all()
+        return [
+            {
+                "trade_id": t.trade_id,
+                "symbol": t.symbol,
+                "direction": t.direction,
+                "quantity": t.quantity,
+                "status": t.status,
+                "entry_price": t.entry_price,
+                "created_at": t.created_at.isoformat()
+            } for t in trades
+        ]
+    finally:
+        db.close()

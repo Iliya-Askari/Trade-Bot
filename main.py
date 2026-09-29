@@ -9,39 +9,98 @@ from app.config.settings import settings
 from app.execution.mt5_adapter import MT5Adapter
 from app.strategies.engine import StrategyEngine
 from app.ai.brain import AIBrain
+from app.database.session import SessionLocal
+from app.database.models import SystemEvent, Trade
 import time
+import uuid
+
+def log_event(level: str, module: str, message: str):
+    print(f"[{level}] {module}: {message}")
+    db = SessionLocal()
+    try:
+        event = SystemEvent(level=level, module=module, message=message)
+        db.add(event)
+        db.commit()
+    except Exception as e:
+        print(f"Failed to log event: {e}")
+    finally:
+        db.close()
+
+def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_price: float = 0.0):
+    db = SessionLocal()
+    try:
+        trade = Trade(
+            trade_id=str(uuid.uuid4()),
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            status=status,
+            entry_price=entry_price
+        )
+        db.add(trade)
+        db.commit()
+    except Exception as e:
+        print(f"Failed to log trade: {e}")
+    finally:
+        db.close()
 
 def run_trading_loop(is_live: bool = False):
-    print(f"Starting {'LIVE' if is_live else 'PAPER'} trading engine on {settings.DEFAULT_SYMBOL}...")
+    mode = 'LIVE' if is_live else 'PAPER'
+    log_event("INFO", "TradingLoop", f"Starting {mode} trading engine on {settings.DEFAULT_SYMBOL}...")
+
     adapter = MT5Adapter()
     if not adapter.connect():
-        print("Failed to connect to MT5.")
+        log_event("ERROR", "MT5Adapter", "Failed to connect to MT5.")
         return
 
     strategy = StrategyEngine()
     ai = AIBrain(settings.AI_MODEL_NAME)
 
-    # Simulate a single loop iteration for demonstration
-    print("Fetching market data...")
-    data = adapter.fetch_ohlcv(settings.DEFAULT_SYMBOL, "1H")
+    log_event("INFO", "TradingLoop", "Entering autonomous loop.")
 
-    print("Evaluating strategies...")
-    candidates = strategy.evaluate_market_data(data)
+    while True:
+        try:
+            # log_event("INFO", "TradingLoop", f"Analyzing {settings.DEFAULT_SYMBOL}...")
+            data = adapter.fetch_ohlcv(settings.DEFAULT_SYMBOL, "1H")
 
-    print("AI evaluating candidates...")
-    decision = ai.evaluate_candidates(candidates, {})
+            candidates = strategy.evaluate_market_data(data)
 
-    print(f"AI Decision: {decision}")
+            if candidates.get("status") in ["NO_DATA", "WAIT", "NO_TRADE"]:
+                # Suppress spammy wait logs, but print to console
+                print(f"Waiting... {candidates.get('reason', '')}")
+            else:
+                log_event("INFO", "Strategy", f"Signal found: {candidates.get('direction')} - {candidates.get('reason')}")
 
-    if decision.get("action") in ["BUY", "SELL"]:
-        order = {
-            "symbol": settings.DEFAULT_SYMBOL,
-            "side": decision["action"],
-            "quantity": 0.1 # Example quantity
-        }
-        print(f"Submitting order: {order}")
-        result = adapter.submit_order(order)
-        print(f"Order result: {result}")
+                decision = ai.evaluate_candidates(candidates, {})
+                log_event("INFO", "AI", f"Decision: {decision.get('action')} (Confidence: {decision.get('confidence')})")
+
+                if decision.get("action") in ["BUY", "SELL"]:
+                    order = {
+                        "symbol": settings.DEFAULT_SYMBOL,
+                        "side": decision["action"],
+                        "quantity": 0.1
+                    }
+                    log_event("INFO", "Execution", f"Submitting order: {order}")
+                    result = adapter.submit_order(order)
+                    log_event("INFO", "Execution", f"Order result: {result}")
+
+                    if result.get("status") in ["SUBMITTED", "FILLED"]:
+                        log_trade(
+                            symbol=settings.DEFAULT_SYMBOL,
+                            direction=decision["action"],
+                            quantity=0.1,
+                            status="OPEN"
+                        )
+
+            # Sleep to prevent spamming the CPU/API
+            time.sleep(10)
+
+        except KeyboardInterrupt:
+            log_event("INFO", "TradingLoop", "Trading loop stopped by operator.")
+            break
+        except Exception as e:
+            log_event("ERROR", "TradingLoop", f"Exception in trading loop: {e}")
+            time.sleep(10)
 
 def run_paper_trading():
     run_trading_loop(is_live=False)
