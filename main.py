@@ -47,6 +47,47 @@ def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_p
     finally:
         db.close()
 
+def calculate_account_risk_state() -> dict:
+    db = SessionLocal()
+    try:
+        # Calculate daily loss based on trades closed today
+        from datetime import datetime, timezone
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        closed_trades = db.query(Trade).filter(Trade.status == "CLOSED").all()
+
+        daily_loss_sum = 0.0
+        peak_equity = settings.TRADE_ALLOCATION
+        current_equity = settings.TRADE_ALLOCATION
+
+        for t in closed_trades:
+            if t.pnl is not None:
+                current_equity += t.pnl
+                if current_equity > peak_equity:
+                    peak_equity = current_equity
+
+            if t.updated_at and t.updated_at.replace(tzinfo=timezone.utc) >= today_start:
+                if t.pnl is not None and t.pnl < 0:
+                    daily_loss_sum += abs(t.pnl)
+
+        drawdown_pct = 0.0
+        if peak_equity > 0:
+            drawdown_pct = (peak_equity - current_equity) / peak_equity
+
+        daily_loss_pct = 0.0
+        if current_equity > 0:
+            daily_loss_pct = daily_loss_sum / current_equity
+
+        return {
+            "daily_loss": daily_loss_pct,
+            "drawdown": drawdown_pct
+        }
+    except Exception as e:
+        log_event("ERROR", "RiskManager", f"Failed to calculate account state: {e}")
+        return {"daily_loss": 0.0, "drawdown": 0.0}
+    finally:
+        db.close()
+
 def has_open_position(symbol: str, direction: str) -> bool:
     db = SessionLocal()
     try:
@@ -63,6 +104,17 @@ def manage_open_positions(current_price: float, data: list, strategy: StrategyEn
     try:
         open_trades = db.query(Trade).filter(Trade.status == "OPEN").all()
         for trade in open_trades:
+            # MT5 Broker Reconciliation
+            # If the broker has already closed the trade (e.g. hit broker-side SL/TP),
+            # we must sync our local database to avoid an infinite loop of trying to close a dead trade.
+            if not adapter.position_exists(trade.trade_id):
+                log_event("WARNING", "Reconciliation", f"Trade {trade.trade_id} missing on broker. Syncing local DB to CLOSED.")
+                trade.status = "CLOSED"
+                trade.exit_price = current_price # Approximate
+                # Note: In a real system, you'd fetch the exact PnL from MT5 history here.
+                db.commit()
+                continue
+
             close_trade = False
             pnl = 0.0
 
@@ -154,16 +206,18 @@ def run_trading_loop():
             if loop_count % 5 == 0:
                 log_event("INFO", "TradingLoop", f"Scanning {settings.DEFAULT_SYMBOL} at ${current_price:.2f}...")
 
-            # 2. Look for new setups ONLY on new candle
+            # 2. Look for new setups ONLY on new closed candle to prevent repainting
             if last_candle_time is None or current_candle_time != last_candle_time:
-                candidates = strategy.evaluate_market_data(data)
+                # Update last candle time immediately to prevent spamming the same candle
+                last_candle_time = current_candle_time
+
+                # Pass only closed candles (all except the last one which is still forming)
+                candidates = strategy.evaluate_market_data(data[:-1])
 
                 if candidates.get("status") in ["NO_DATA", "WAIT", "NO_TRADE"]:
                     # Suppress spammy wait logs
                     pass
                 else:
-                    # Update last candle time only if we successfully evaluated a new candle
-                    last_candle_time = current_candle_time
                     log_event("INFO", "Strategy", f"Signal: {candidates.get('direction')} | {candidates.get('reason')}")
 
                     direction = candidates.get('direction')
@@ -177,8 +231,10 @@ def run_trading_loop():
 
                     if decision.get("action") == "NO_TRADE":
                         log_event("INFO", "AI", f"Decision: NO_TRADE | Reason: {decision.get('reasoning_summary')}")
-                    elif decision.get("action") in ["BUY", "SELL"]:
-                        log_event("INFO", "AI", f"Decision: {decision.get('action')} | Confidence: {decision.get('confidence'):.2f}")
+                        continue # CRITICAL FIX: Do not proceed to Risk Engine if AI says NO_TRADE
+
+                    log_event("INFO", "AI", f"Decision: {decision.get('action')} | Confidence: {decision.get('confidence'):.2f}")
+
                     trade_proposal = {
                         "risk_percent": settings.MAX_RISK_PER_TRADE,
                         "leverage": settings.MAX_LEVERAGE,
@@ -186,20 +242,35 @@ def run_trading_loop():
                         "side": decision["action"]
                     }
 
+                    account_state = calculate_account_risk_state()
+
                     # ENFORCE RISK ENGINE
-                    is_valid, reason = risk_engine.validate_trade(trade_proposal, account_state={"daily_loss": 0, "drawdown": 0})
+                    is_valid, reason = risk_engine.validate_trade(trade_proposal, account_state)
                     if not is_valid:
                         log_event("WARNING", "RiskEngine", f"REJECTED: {reason}")
-                        # We must reset last_candle_time so that we don't consider this candle "handled"
-                        # if it was rejected due to transient issues, but given the user's issue with spam:
-                        # We should ACTUALLY KEEP last_candle_time set so it doesn't try again until the next candle.
                         continue
 
-                    # Calculate quantity based on UI Allocation and Leverage
-                    # Note: Assumes base currency calculation logic. Simply using dollars for prototype.
-                    quantity = round((settings.TRADE_ALLOCATION * settings.MAX_LEVERAGE) / current_price, 2)
                     sl = candidates.get("stop_loss")
                     tp = candidates.get("take_profit")
+
+                    # Calculate quantity based on TRUE Risk Sizing
+                    # Formula: Position Size = (Account Equity * Risk%) / (SL Distance * Contract Size * Tick Value)
+                    # For XAUUSD, Contract Size is usually 100.
+                    contract_size = 100.0
+
+                    if sl and sl != current_price:
+                        sl_distance = abs(current_price - sl)
+                        monetary_risk = settings.TRADE_ALLOCATION * settings.MAX_RISK_PER_TRADE
+                        # Leverage adjusts buying power, but risk is absolute dollars lost if SL is hit
+                        quantity = round(monetary_risk / (sl_distance * contract_size), 2)
+                    else:
+                        # Fallback to allocation-based leverage sizing if SL is missing
+                        quantity = round((settings.TRADE_ALLOCATION * settings.MAX_LEVERAGE) / (current_price * contract_size), 2)
+
+                    # Prevent sending 0.0 volume to MT5 (Min volume is usually 0.01)
+                    if quantity < 0.01:
+                        log_event("ERROR", "Execution", f"Calculated quantity ({quantity}) is below minimum 0.01 lot size.")
+                        continue
 
                     log_event("INFO", "Risk", f"Risk: {settings.MAX_RISK_PER_TRADE*100}% | Position: {quantity} | SL: {sl:.2f} | TP: {tp:.2f}")
 
@@ -213,7 +284,7 @@ def run_trading_loop():
                     }
                     log_event("INFO", "Execution", f"Submitting {decision['action']} {quantity} {settings.DEFAULT_SYMBOL}")
                     result = adapter.submit_order(order)
-                    log_event("INFO", "Execution", f"{result.get('status')} - ID: {result.get('order_id', 'N/A')}")
+                    log_event("INFO", "Execution", f"{result.get('status')} - ID: {result.get('order_id', 'N/A')} - MSG: {result.get('error', 'OK')}")
 
                     if result.get("status") in ["SUBMITTED", "FILLED"]:
                         # Handle mock vs live order IDs
@@ -225,7 +296,7 @@ def run_trading_loop():
                                 trade_id=final_order_id,
                                 symbol=settings.DEFAULT_SYMBOL,
                                 direction=direction, # Correctly save LONG/SHORT instead of BUY/SELL
-                                quantity=round(quantity, 2),
+                                quantity=quantity,
                                 status="OPEN",
                                 entry_price=candidates.get("entry_price", current_price),
                                 stop_loss=candidates.get("stop_loss"),

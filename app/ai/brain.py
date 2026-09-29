@@ -16,7 +16,8 @@ class AIBrain:
         # Advanced Validation: Risk/Reward check based on dynamic ATR stops
         rr = candidates.get("risk_reward_ratio", 0)
 
-        if rr < 2.0:
+        # We use 1.99 to avoid float precision issues incorrectly rejecting perfect 2.0 R/R setups
+        if rr < 1.99:
             return {
                 "action": "NO_TRADE",
                 "reasoning_summary": f"Rejected by AI: Risk/Reward ratio of {rr:.2f} is below the strict 1:2 minimum threshold."
