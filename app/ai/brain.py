@@ -13,10 +13,19 @@ class AIBrain:
 
         direction = candidates.get("direction", "WAIT")
 
+        # Advanced Validation: Risk/Reward check based on dynamic ATR stops
+        rr = candidates.get("risk_reward_ratio", 0)
+
+        if rr < 2.0:
+            return {
+                "action": "NO_TRADE",
+                "reasoning_summary": f"Rejected by AI: Risk/Reward ratio of {rr:.2f} is below the strict 1:2 minimum threshold."
+            }
+
         # Simplified AI evaluation
         return {
             "action": "BUY" if direction == "LONG" else "SELL",
             "confidence": candidates.get("confidence", 0.5) * 1.2, # AI boosts confidence based on 'context'
-            "reasoning_summary": f"AI confirms {direction} setup via {self.model_name}.",
+            "reasoning_summary": f"AI confirms {direction} setup via {self.model_name}. R/R ratio verified ({rr:.2f}).",
             "expected_value": 0.05
         }

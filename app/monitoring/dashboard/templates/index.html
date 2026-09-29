@@ -15,7 +15,10 @@
 <body>
     <div class="header">
         <h1>Trading Dashboard</h1>
-        <div class="status">System Status: {{ status }}</div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+            <div id="trading_status" class="status" style="background: #888;">Checking Status...</div>
+            <button id="toggle_btn" onclick="toggleTrading()" style="padding: 10px 20px; font-size: 1.1em; font-weight: bold; cursor: pointer; border: none; border-radius: 4px; background: #2196F3; color: white;">Toggle Trading</button>
+        </div>
     </div>
 
     <div class="grid">
@@ -80,10 +83,44 @@
             }
         }
 
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/trading/status');
+                const status = await res.json();
+                const statusEl = document.getElementById('trading_status');
+                const btnEl = document.getElementById('toggle_btn');
+
+                if(status.active) {
+                    statusEl.innerText = "TRADING ACTIVE";
+                    statusEl.style.background = "#4caf50";
+                    btnEl.innerText = "STOP TRADING";
+                    btnEl.style.background = "#f44336";
+                } else {
+                    statusEl.innerText = "TRADING STOPPED";
+                    statusEl.style.background = "#f44336";
+                    btnEl.innerText = "START TRADING";
+                    btnEl.style.background = "#4caf50";
+                }
+            } catch (e) {
+                console.error("Failed to fetch status", e);
+            }
+        }
+
+        async function toggleTrading() {
+            const res = await fetch('/api/trading/status');
+            const status = await res.json();
+
+            const endpoint = status.active ? '/api/trading/stop' : '/api/trading/start';
+            await fetch(endpoint, { method: 'POST' });
+            fetchStatus();
+        }
+
         setInterval(fetchLogs, 2000);
         setInterval(fetchTrades, 5000);
+        setInterval(fetchStatus, 2000);
         fetchLogs();
         fetchTrades();
+        fetchStatus();
 
         async function updateMT5() {
             const login = document.getElementById('mt5_login').value;

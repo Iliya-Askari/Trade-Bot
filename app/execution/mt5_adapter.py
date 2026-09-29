@@ -9,9 +9,6 @@ logger = logging.getLogger(__name__)
 class MT5Adapter(ExecutionProvider, MarketDataProvider):
     def __init__(self):
         self.connected = False
-        self.login = settings.MT5_LOGIN
-        self.password = settings.MT5_PASSWORD
-        self.server = settings.MT5_SERVER
 
         # MetaTrader5 only works on Windows
         if sys.platform != 'win32':
@@ -35,11 +32,11 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             logger.error(f"MT5 initialize() failed, error code: {self.mt5.last_error()}")
             return False
 
-        if self.login and self.password and self.server:
+        if settings.MT5_LOGIN and settings.MT5_PASSWORD and settings.MT5_SERVER:
             authorized = self.mt5.login(
-                login=self.login,
-                password=self.password,
-                server=self.server
+                login=settings.MT5_LOGIN,
+                password=settings.MT5_PASSWORD,
+                server=settings.MT5_SERVER
             )
             if not authorized:
                 logger.error(f"MT5 login failed, error code: {self.mt5.last_error()}")
@@ -53,12 +50,26 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             return []
 
         if not self.mt5:
-            # Mock data for non-Windows environments
-            return [{"time": "2024-01-01T00:00:00Z", "open": 1.0, "high": 1.1, "low": 0.9, "close": 1.05, "volume": 100}]
+            # Mock data for non-Windows environments (Generate 250 candles to pass EMA200 checks)
+            mock_data = []
+            import random
+            price = 2000.0
+            for i in range(250):
+                price += random.uniform(-5, 5)
+                mock_data.append({
+                    "time": f"2024-01-01T{i%24:02d}:00:00Z",
+                    "open": price,
+                    "high": price + 2,
+                    "low": price - 2,
+                    "close": price + random.uniform(-1, 1),
+                    "volume": 100
+                })
+            return mock_data
 
         # Very basic implementation for fetching rates
         # In a real scenario, map `timeframe` to mt5.TIMEFRAME_* constants
-        rates = self.mt5.copy_rates_from_pos(symbol, self.mt5.TIMEFRAME_H1, 0, 100)
+        # Request at least 250 candles to satisfy the 200-EMA calculation
+        rates = self.mt5.copy_rates_from_pos(symbol, self.mt5.TIMEFRAME_H1, 0, 250)
         if rates is None:
             logger.error(f"Failed to fetch rates for {symbol}")
             return []

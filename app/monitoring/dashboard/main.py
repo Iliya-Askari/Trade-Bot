@@ -23,9 +23,42 @@ class MT5ConfigUpdate(BaseModel):
 class SymbolUpdate(BaseModel):
     symbol: str
 
+# Global dict to control the background thread safely
+trading_state = {"active": False}
+
 @dashboard_app.get("/api/health")
 async def health_check():
     return {"status": "HEALTHY"}
+
+@dashboard_app.post("/api/trading/start")
+async def start_trading():
+    trading_state["active"] = True
+    from app.database.session import SessionLocal
+    from app.database.models import SystemEvent
+    db = SessionLocal()
+    try:
+        db.add(SystemEvent(level="INFO", module="UI", message="OPERATOR ACTIVATED TRADING"))
+        db.commit()
+    except: pass
+    finally: db.close()
+    return {"status": "success", "message": "Trading loop activated."}
+
+@dashboard_app.post("/api/trading/stop")
+async def stop_trading():
+    trading_state["active"] = False
+    from app.database.session import SessionLocal
+    from app.database.models import SystemEvent
+    db = SessionLocal()
+    try:
+        db.add(SystemEvent(level="INFO", module="UI", message="OPERATOR STOPPED TRADING"))
+        db.commit()
+    except: pass
+    finally: db.close()
+    return {"status": "success", "message": "Trading loop stopped."}
+
+@dashboard_app.get("/api/trading/status")
+async def get_trading_status():
+    return {"active": trading_state["active"]}
 
 @dashboard_app.post("/api/config/mt5")
 async def update_mt5_config(config: MT5ConfigUpdate):
