@@ -27,7 +27,7 @@ def log_event(level: str, module: str, message: str):
     finally:
         db.close()
 
-def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_price: float = 0.0):
+def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_price: float = 0.0, stop_loss: float = None, take_profit: float = None):
     db = SessionLocal()
     try:
         trade = Trade(
@@ -36,12 +36,55 @@ def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_p
             direction=direction,
             quantity=quantity,
             status=status,
-            entry_price=entry_price
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit
         )
         db.add(trade)
         db.commit()
     except Exception as e:
         print(f"Failed to log trade: {e}")
+    finally:
+        db.close()
+
+def manage_open_positions(current_price: float):
+    db = SessionLocal()
+    try:
+        open_trades = db.query(Trade).filter(Trade.status == "OPEN").all()
+        for trade in open_trades:
+            close_trade = False
+            pnl = 0.0
+
+            if trade.direction == "LONG":
+                if trade.stop_loss and current_price <= trade.stop_loss:
+                    close_trade = True
+                    log_event("WARNING", "PositionManager", f"Stop Loss hit for LONG {trade.symbol} at {current_price}")
+                elif trade.take_profit and current_price >= trade.take_profit:
+                    close_trade = True
+                    log_event("INFO", "PositionManager", f"Take Profit hit for LONG {trade.symbol} at {current_price}")
+
+                if close_trade:
+                    pnl = (current_price - trade.entry_price) * trade.quantity
+
+            elif trade.direction == "SHORT":
+                if trade.stop_loss and current_price >= trade.stop_loss:
+                    close_trade = True
+                    log_event("WARNING", "PositionManager", f"Stop Loss hit for SHORT {trade.symbol} at {current_price}")
+                elif trade.take_profit and current_price <= trade.take_profit:
+                    close_trade = True
+                    log_event("INFO", "PositionManager", f"Take Profit hit for SHORT {trade.symbol} at {current_price}")
+
+                if close_trade:
+                    pnl = (trade.entry_price - current_price) * trade.quantity
+
+            if close_trade:
+                trade.status = "CLOSED"
+                trade.exit_price = current_price
+                trade.pnl = pnl
+                db.commit()
+                log_event("INFO", "PositionManager", f"Trade {trade.trade_id} closed with PnL: ${pnl:.2f}")
+    except Exception as e:
+        log_event("ERROR", "PositionManager", f"Failed to manage positions: {e}")
     finally:
         db.close()
 
@@ -58,6 +101,7 @@ def run_trading_loop():
 
     log_event("INFO", "TradingLoop", "Ready. Waiting for START signal from UI.")
 
+    loop_count = 0
     while True:
         try:
             time.sleep(2) # check interval
@@ -70,12 +114,25 @@ def run_trading_loop():
                 continue
 
             data = adapter.fetch_ohlcv(settings.DEFAULT_SYMBOL, "1H")
+            if not data:
+                continue
 
+            current_price = data[-1]['close']
+
+            # 1. Manage existing positions
+            manage_open_positions(current_price)
+
+            # Periodic scan logging to show activity
+            loop_count += 1
+            if loop_count % 5 == 0:
+                log_event("INFO", "TradingLoop", f"Scanning {settings.DEFAULT_SYMBOL} at ${current_price:.2f}...")
+
+            # 2. Look for new setups
             candidates = strategy.evaluate_market_data(data)
 
             if candidates.get("status") in ["NO_DATA", "WAIT", "NO_TRADE"]:
-                # Suppress spammy wait logs, but print to console
-                print(f"Waiting... {candidates.get('reason', '')}")
+                # Suppress spammy wait logs
+                pass
             else:
                 log_event("INFO", "Strategy", f"Signal found: {candidates.get('direction')} - {candidates.get('reason')}")
 
@@ -109,11 +166,14 @@ def run_trading_loop():
                             symbol=settings.DEFAULT_SYMBOL,
                             direction=decision["action"],
                             quantity=0.1,
-                            status="OPEN"
+                            status="OPEN",
+                            entry_price=candidates.get("entry_price", current_price),
+                            stop_loss=candidates.get("stop_loss"),
+                            take_profit=candidates.get("take_profit")
                         )
 
             # Sleep to prevent spamming the CPU/API
-            time.sleep(10)
+            time.sleep(5)
 
         except KeyboardInterrupt:
             log_event("INFO", "TradingLoop", "Trading loop stopped by operator.")

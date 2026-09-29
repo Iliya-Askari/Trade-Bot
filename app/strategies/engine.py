@@ -34,8 +34,8 @@ class StrategyEngine:
         atr = latest['ATRr_14']
         close_price = latest['close']
 
-        # Bullish condition: 50 EMA > 200 EMA (Uptrend) and RSI < 30 (Oversold pullback)
-        if ema_50 > ema_200 and rsi < 30:
+        # Bullish condition: 50 EMA > 200 EMA (Uptrend) and RSI < 45 (Loosened for more activity)
+        if ema_50 > ema_200 and rsi < 45:
             stop_loss = close_price - (atr * 1.5)
             take_profit = close_price + (atr * 3.0) # 1:2 Risk Reward minimum
 
@@ -48,11 +48,11 @@ class StrategyEngine:
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "risk_reward_ratio": (take_profit - close_price) / (close_price - stop_loss),
-                "reason": f"Uptrend (EMA50 > EMA200) with Oversold RSI ({rsi:.2f}). ATR: {atr:.2f}"
+                "reason": f"Uptrend (EMA50 > EMA200) with RSI ({rsi:.2f}). ATR: {atr:.2f}"
             }
 
-        # Bearish condition: 50 EMA < 200 EMA (Downtrend) and RSI > 70 (Overbought pullback)
-        elif ema_50 < ema_200 and rsi > 70:
+        # Bearish condition: 50 EMA < 200 EMA (Downtrend) and RSI > 55 (Loosened for more activity)
+        elif ema_50 < ema_200 and rsi > 55:
             stop_loss = close_price + (atr * 1.5)
             take_profit = close_price - (atr * 3.0)
 
@@ -65,7 +65,7 @@ class StrategyEngine:
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "risk_reward_ratio": (close_price - take_profit) / (stop_loss - close_price),
-                "reason": f"Downtrend (EMA50 < EMA200) with Overbought RSI ({rsi:.2f}). ATR: {atr:.2f}"
+                "reason": f"Downtrend (EMA50 < EMA200) with RSI ({rsi:.2f}). ATR: {atr:.2f}"
             }
 
         return {"status": "WAIT", "reason": f"No signal. RSI: {rsi:.2f}, EMA50: {ema_50:.2f}, EMA200: {ema_200:.2f}"}

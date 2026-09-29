@@ -112,8 +112,35 @@ async def get_trades(limit: int = 10):
                 "quantity": t.quantity,
                 "status": t.status,
                 "entry_price": t.entry_price,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "pnl": t.pnl,
                 "created_at": t.created_at.isoformat()
             } for t in trades
         ]
+    finally:
+        db.close()
+
+@dashboard_app.get("/api/portfolio")
+async def get_portfolio():
+    db = SessionLocal()
+    try:
+        trades = db.query(Trade).all()
+        total_pnl = sum([t.pnl for t in trades if t.pnl is not None])
+        wins = len([t for t in trades if t.pnl is not None and t.pnl > 0])
+        losses = len([t for t in trades if t.pnl is not None and t.pnl <= 0])
+        total_closed = wins + losses
+        win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
+
+        open_trades = [t for t in trades if t.status == "OPEN"]
+        active_investment = sum([t.entry_price * t.quantity for t in open_trades])
+
+        return {
+            "total_pnl": round(total_pnl, 2),
+            "win_rate": round(win_rate, 2),
+            "total_trades": total_closed,
+            "open_positions_count": len(open_trades),
+            "active_investment": round(active_investment, 2)
+        }
     finally:
         db.close()
