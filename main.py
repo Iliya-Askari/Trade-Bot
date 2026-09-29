@@ -187,8 +187,12 @@ def run_trading_loop():
                     }
 
                     # ENFORCE RISK ENGINE
-                    if not risk_engine.validate_trade(trade_proposal, account_state={"daily_loss": 0, "drawdown": 0}):
-                        log_event("WARNING", "RiskEngine", f"Trade rejected by Risk Engine: {trade_proposal}")
+                    is_valid, reason = risk_engine.validate_trade(trade_proposal, account_state={"daily_loss": 0, "drawdown": 0})
+                    if not is_valid:
+                        log_event("WARNING", "RiskEngine", f"REJECTED: {reason}")
+                        # We must reset last_candle_time so that we don't consider this candle "handled"
+                        # if it was rejected due to transient issues, but given the user's issue with spam:
+                        # We should ACTUALLY KEEP last_candle_time set so it doesn't try again until the next candle.
                         continue
 
                     # Calculate quantity based on UI Allocation and Leverage
@@ -220,7 +224,7 @@ def run_trading_loop():
                             trade = Trade(
                                 trade_id=final_order_id,
                                 symbol=settings.DEFAULT_SYMBOL,
-                                direction=decision["action"],
+                                direction=direction, # Correctly save LONG/SHORT instead of BUY/SELL
                                 quantity=round(quantity, 2),
                                 status="OPEN",
                                 entry_price=candidates.get("entry_price", current_price),
