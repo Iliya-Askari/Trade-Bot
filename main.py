@@ -47,6 +47,17 @@ def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_p
     finally:
         db.close()
 
+def has_open_position(symbol: str, direction: str) -> bool:
+    db = SessionLocal()
+    try:
+        count = db.query(Trade).filter(Trade.status == "OPEN", Trade.symbol == symbol, Trade.direction == direction).count()
+        return count > 0
+    except Exception as e:
+        log_event("ERROR", "PositionManager", f"Failed to check open positions: {e}")
+        return False
+    finally:
+        db.close()
+
 def manage_open_positions(current_price: float, data: list, strategy: StrategyEngine, adapter: MT5Adapter):
     db = SessionLocal()
     try:
@@ -115,6 +126,8 @@ def run_trading_loop():
     log_event("INFO", "TradingLoop", "Ready. Waiting for START signal from UI.")
 
     loop_count = 0
+    last_candle_time = None
+
     while True:
         try:
             time.sleep(2) # check interval
@@ -131,6 +144,7 @@ def run_trading_loop():
                 continue
 
             current_price = data[-1]['close']
+            current_candle_time = data[-1]['time']
 
             # 1. Manage existing positions with dynamic early exit logic
             manage_open_positions(current_price, data, strategy, adapter)
@@ -140,19 +154,31 @@ def run_trading_loop():
             if loop_count % 5 == 0:
                 log_event("INFO", "TradingLoop", f"Scanning {settings.DEFAULT_SYMBOL} at ${current_price:.2f}...")
 
-            # 2. Look for new setups
-            candidates = strategy.evaluate_market_data(data)
+            # 2. Look for new setups ONLY on new candle
+            if last_candle_time is None or current_candle_time != last_candle_time:
+                candidates = strategy.evaluate_market_data(data)
 
-            if candidates.get("status") in ["NO_DATA", "WAIT", "NO_TRADE"]:
-                # Suppress spammy wait logs
-                pass
-            else:
-                log_event("INFO", "Strategy", f"Signal found: {candidates.get('direction')} - {candidates.get('reason')}")
+                if candidates.get("status") in ["NO_DATA", "WAIT", "NO_TRADE"]:
+                    # Suppress spammy wait logs
+                    pass
+                else:
+                    # Update last candle time only if we successfully evaluated a new candle
+                    last_candle_time = current_candle_time
+                    log_event("INFO", "Strategy", f"Signal: {candidates.get('direction')} | {candidates.get('reason')}")
 
-                decision = ai.evaluate_candidates(candidates, {})
-                log_event("INFO", "AI", f"Decision: {decision.get('action')} (Confidence: {decision.get('confidence')})")
+                    direction = candidates.get('direction')
 
-                if decision.get("action") in ["BUY", "SELL"]:
+                    # 3. Position Manager Check (Prevent duplicate orders)
+                    if has_open_position(settings.DEFAULT_SYMBOL, direction):
+                        log_event("INFO", "PositionManager", f"Existing {direction} position open for {settings.DEFAULT_SYMBOL}: NO_TRADE")
+                        continue
+
+                    decision = ai.evaluate_candidates(candidates, {})
+
+                    if decision.get("action") == "NO_TRADE":
+                        log_event("INFO", "AI", f"Decision: NO_TRADE | Reason: {decision.get('reasoning_summary')}")
+                    elif decision.get("action") in ["BUY", "SELL"]:
+                        log_event("INFO", "AI", f"Decision: {decision.get('action')} | Confidence: {decision.get('confidence'):.2f}")
                     trade_proposal = {
                         "risk_percent": settings.MAX_RISK_PER_TRADE,
                         "leverage": settings.MAX_LEVERAGE,
@@ -167,19 +193,23 @@ def run_trading_loop():
 
                     # Calculate quantity based on UI Allocation and Leverage
                     # Note: Assumes base currency calculation logic. Simply using dollars for prototype.
-                    quantity = (settings.TRADE_ALLOCATION * settings.MAX_LEVERAGE) / current_price
+                    quantity = round((settings.TRADE_ALLOCATION * settings.MAX_LEVERAGE) / current_price, 2)
+                    sl = candidates.get("stop_loss")
+                    tp = candidates.get("take_profit")
+
+                    log_event("INFO", "Risk", f"Risk: {settings.MAX_RISK_PER_TRADE*100}% | Position: {quantity} | SL: {sl:.2f} | TP: {tp:.2f}")
 
                     order = {
                         "symbol": settings.DEFAULT_SYMBOL,
                         "side": decision["action"],
-                        "quantity": round(quantity, 2), # Round to standard lot decimal
+                        "quantity": quantity,
                         "price": candidates.get("entry_price", current_price),
-                        "stop_loss": candidates.get("stop_loss"),
-                        "take_profit": candidates.get("take_profit")
+                        "stop_loss": sl,
+                        "take_profit": tp
                     }
-                    log_event("INFO", "Execution", f"Submitting order: {order}")
+                    log_event("INFO", "Execution", f"Submitting {decision['action']} {quantity} {settings.DEFAULT_SYMBOL}")
                     result = adapter.submit_order(order)
-                    log_event("INFO", "Execution", f"Order result: {result}")
+                    log_event("INFO", "Execution", f"{result.get('status')} - ID: {result.get('order_id', 'N/A')}")
 
                     if result.get("status") in ["SUBMITTED", "FILLED"]:
                         # Handle mock vs live order IDs
