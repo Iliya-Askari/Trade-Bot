@@ -47,7 +47,7 @@ def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_p
     finally:
         db.close()
 
-def manage_open_positions(current_price: float):
+def manage_open_positions(current_price: float, data: list, strategy: StrategyEngine, adapter: MT5Adapter):
     db = SessionLocal()
     try:
         open_trades = db.query(Trade).filter(Trade.status == "OPEN").all()
@@ -55,11 +55,18 @@ def manage_open_positions(current_price: float):
             close_trade = False
             pnl = 0.0
 
+            # 1. Dynamic Early Exit check
+            early_exit = strategy.check_early_exit(data, trade.direction)
+            if early_exit:
+                close_trade = True
+                log_event("WARNING", "PositionManager", f"DYNAMIC EARLY EXIT triggered for {trade.direction} {trade.symbol}. Trend reversed.")
+
+            # 2. Hard Stop/Take Profit check
             if trade.direction == "LONG":
-                if trade.stop_loss and current_price <= trade.stop_loss:
+                if not close_trade and trade.stop_loss and current_price <= trade.stop_loss:
                     close_trade = True
                     log_event("WARNING", "PositionManager", f"Stop Loss hit for LONG {trade.symbol} at {current_price}")
-                elif trade.take_profit and current_price >= trade.take_profit:
+                elif not close_trade and trade.take_profit and current_price >= trade.take_profit:
                     close_trade = True
                     log_event("INFO", "PositionManager", f"Take Profit hit for LONG {trade.symbol} at {current_price}")
 
@@ -67,10 +74,10 @@ def manage_open_positions(current_price: float):
                     pnl = (current_price - trade.entry_price) * trade.quantity
 
             elif trade.direction == "SHORT":
-                if trade.stop_loss and current_price >= trade.stop_loss:
+                if not close_trade and trade.stop_loss and current_price >= trade.stop_loss:
                     close_trade = True
                     log_event("WARNING", "PositionManager", f"Stop Loss hit for SHORT {trade.symbol} at {current_price}")
-                elif trade.take_profit and current_price <= trade.take_profit:
+                elif not close_trade and trade.take_profit and current_price <= trade.take_profit:
                     close_trade = True
                     log_event("INFO", "PositionManager", f"Take Profit hit for SHORT {trade.symbol} at {current_price}")
 
@@ -78,11 +85,17 @@ def manage_open_positions(current_price: float):
                     pnl = (trade.entry_price - current_price) * trade.quantity
 
             if close_trade:
-                trade.status = "CLOSED"
-                trade.exit_price = current_price
-                trade.pnl = pnl
-                db.commit()
-                log_event("INFO", "PositionManager", f"Trade {trade.trade_id} closed with PnL: ${pnl:.2f}")
+                # Transmit CLOSE order to broker
+                close_res = adapter.close_position(symbol=trade.symbol, position_id=trade.trade_id, side=trade.direction, volume=trade.quantity)
+
+                if close_res.get("status") == "CLOSED":
+                    trade.status = "CLOSED"
+                    trade.exit_price = current_price
+                    trade.pnl = pnl
+                    db.commit()
+                    log_event("INFO", "PositionManager", f"Trade {trade.trade_id} closed on broker. PnL: ${pnl:.2f}")
+                else:
+                    log_event("ERROR", "PositionManager", f"Failed to close trade {trade.trade_id} on broker: {close_res}")
     except Exception as e:
         log_event("ERROR", "PositionManager", f"Failed to manage positions: {e}")
     finally:
@@ -119,8 +132,8 @@ def run_trading_loop():
 
             current_price = data[-1]['close']
 
-            # 1. Manage existing positions
-            manage_open_positions(current_price)
+            # 1. Manage existing positions with dynamic early exit logic
+            manage_open_positions(current_price, data, strategy, adapter)
 
             # Periodic scan logging to show activity
             loop_count += 1
@@ -142,7 +155,7 @@ def run_trading_loop():
                 if decision.get("action") in ["BUY", "SELL"]:
                     trade_proposal = {
                         "risk_percent": settings.MAX_RISK_PER_TRADE,
-                        "leverage": 1.0,
+                        "leverage": settings.MAX_LEVERAGE,
                         "symbol": settings.DEFAULT_SYMBOL,
                         "side": decision["action"]
                     }
@@ -152,25 +165,44 @@ def run_trading_loop():
                         log_event("WARNING", "RiskEngine", f"Trade rejected by Risk Engine: {trade_proposal}")
                         continue
 
+                    # Calculate quantity based on UI Allocation and Leverage
+                    # Note: Assumes base currency calculation logic. Simply using dollars for prototype.
+                    quantity = (settings.TRADE_ALLOCATION * settings.MAX_LEVERAGE) / current_price
+
                     order = {
                         "symbol": settings.DEFAULT_SYMBOL,
                         "side": decision["action"],
-                        "quantity": 0.1
+                        "quantity": round(quantity, 2), # Round to standard lot decimal
+                        "price": candidates.get("entry_price", current_price),
+                        "stop_loss": candidates.get("stop_loss"),
+                        "take_profit": candidates.get("take_profit")
                     }
                     log_event("INFO", "Execution", f"Submitting order: {order}")
                     result = adapter.submit_order(order)
                     log_event("INFO", "Execution", f"Order result: {result}")
 
                     if result.get("status") in ["SUBMITTED", "FILLED"]:
-                        log_trade(
-                            symbol=settings.DEFAULT_SYMBOL,
-                            direction=decision["action"],
-                            quantity=0.1,
-                            status="OPEN",
-                            entry_price=candidates.get("entry_price", current_price),
-                            stop_loss=candidates.get("stop_loss"),
-                            take_profit=candidates.get("take_profit")
-                        )
+                        # Handle mock vs live order IDs
+                        final_order_id = result.get("order_id", str(uuid.uuid4()))
+
+                        db = SessionLocal()
+                        try:
+                            trade = Trade(
+                                trade_id=final_order_id,
+                                symbol=settings.DEFAULT_SYMBOL,
+                                direction=decision["action"],
+                                quantity=round(quantity, 2),
+                                status="OPEN",
+                                entry_price=candidates.get("entry_price", current_price),
+                                stop_loss=candidates.get("stop_loss"),
+                                take_profit=candidates.get("take_profit")
+                            )
+                            db.add(trade)
+                            db.commit()
+                        except Exception as e:
+                            log_event("ERROR", "Execution", f"Failed to log trade to DB: {e}")
+                        finally:
+                            db.close()
 
             # Sleep to prevent spamming the CPU/API
             time.sleep(5)

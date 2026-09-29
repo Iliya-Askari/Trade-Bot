@@ -72,6 +72,13 @@
                 <input type="text" id="trade_symbol" placeholder="Symbol (e.g. XAUUSD)" value="XAUUSD">
                 <button onclick="updateSymbol()" style="white-space: nowrap;">Update Symbol</button>
             </div>
+
+            <h4 style="margin-top: 20px;">Trade Allocation</h4>
+            <div style="display: flex; gap: 10px; margin-bottom: 5px;">
+                <input type="number" id="trade_allocation" placeholder="Trade Amount ($)" value="1000">
+                <input type="number" id="trade_leverage" placeholder="Leverage (e.g. 1)" value="1">
+            </div>
+            <button onclick="updateAllocation()" style="width: 100%;">Save Allocation</button>
         </div>
     </div>
 
@@ -188,6 +195,16 @@
             const res = await fetch('/api/config/symbol', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ symbol })
+            });
+            alert((await res.json()).message);
+        }
+
+        async function updateAllocation() {
+            const allocation = document.getElementById('trade_allocation').value;
+            const leverage = document.getElementById('trade_leverage').value;
+            const res = await fetch('/api/config/allocation', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ allocation: parseFloat(allocation), leverage: parseFloat(leverage) })
             });
             alert((await res.json()).message);
         }

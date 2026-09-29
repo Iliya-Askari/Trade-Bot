@@ -23,6 +23,10 @@ class MT5ConfigUpdate(BaseModel):
 class SymbolUpdate(BaseModel):
     symbol: str
 
+class AllocationUpdate(BaseModel):
+    allocation: float
+    leverage: float
+
 # Global dict to control the background thread safely
 trading_state = {"active": False}
 
@@ -72,12 +76,20 @@ async def update_default_symbol(update: SymbolUpdate):
     settings.DEFAULT_SYMBOL = update.symbol
     return {"status": "success", "message": f"Default symbol updated to {update.symbol}"}
 
+@dashboard_app.post("/api/config/allocation")
+async def update_allocation(update: AllocationUpdate):
+    settings.TRADE_ALLOCATION = update.allocation
+    settings.MAX_LEVERAGE = update.leverage
+    return {"status": "success", "message": f"Allocation updated to ${update.allocation} at {update.leverage}x leverage"}
+
 @dashboard_app.get("/api/config")
 async def get_config():
     return {
         "MT5_LOGIN": settings.MT5_LOGIN,
         "MT5_SERVER": settings.MT5_SERVER,
-        "DEFAULT_SYMBOL": settings.DEFAULT_SYMBOL
+        "DEFAULT_SYMBOL": settings.DEFAULT_SYMBOL,
+        "TRADE_ALLOCATION": settings.TRADE_ALLOCATION,
+        "MAX_LEVERAGE": settings.MAX_LEVERAGE
     }
 
 from app.database.session import SessionLocal
