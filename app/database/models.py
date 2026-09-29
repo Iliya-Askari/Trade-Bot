@@ -10,6 +10,8 @@ class Trade(Base):
     direction = Column(String)
     entry_price = Column(Float)
     exit_price = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
     quantity = Column(Float)
     status = Column(String) # OPEN, CLOSED
     pnl = Column(Float, nullable=True)

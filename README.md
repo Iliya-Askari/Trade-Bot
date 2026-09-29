@@ -14,44 +14,23 @@ This is an event-driven autonomous trading system designed for robust execution,
 - `migrations/` - Alembic database migrations.
 - `tests/` - Pytest suites.
 
-## Setup Instructions (Windows 10/11)
+## 🚀 1-Click Setup and Execution
 
-1. **Clone the repository.**
-2. **Create a virtual environment and install dependencies:**
-   ```cmd
-   python -m venv .venv
-   .venv\Scripts\activate
-   python -m pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-3. **Configure Environment Variables:**
-   Copy `.env.example` to `.env` and fill in your details (leave dummy keys for providers not yet connected).
-   ```cmd
-   copy .env.example .env
-   ```
-4. **Initialize the Database:**
-   ```cmd
-   alembic upgrade head
-   ```
+We've radically simplified the setup process. You don't need to manually run commands.
 
-## Execution Commands
+### Windows
+Double-click the `start.bat` file in the main folder.
+*This will automatically create a virtual environment, install all dependencies, setup the database, and launch the web dashboard.*
 
-- **Run Dashboard:**
-  ```cmd
-  python main.py
-  ```
-- **Run Backtest:**
-  ```cmd
-  python main.py --mode backtest
-  ```
-- **Run Paper Trading:**
-  ```cmd
-  python main.py --mode paper
-  ```
-- **Run Live Trading:**
-  ```cmd
-  python main.py --mode live
-  ```
+### Mac / Linux
+Run the following in your terminal:
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+## How to Trade
+Once the dashboard opens in your browser (usually `http://127.0.0.1:8000`), you will see a massive **"START TRADING"** button. The trading loop runs entirely in the background, controlled directly from the UI. You do not need to run separate commands for paper/live trading anymore.
 
 ## Known Limitations
 - Broker Adapters are currently implemented as mock stubs.
