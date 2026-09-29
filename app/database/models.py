@@ -57,3 +57,11 @@ class EconomicEvent(Base):
     actual = Column(String, nullable=True)
     consensus = Column(String, nullable=True)
     previous = Column(String, nullable=True)
+
+class SystemEvent(Base):
+    __tablename__ = "system_events"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    level = Column(String) # INFO, WARNING, ERROR
+    module = Column(String)
+    message = Column(String)

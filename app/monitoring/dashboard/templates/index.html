@@ -20,20 +20,95 @@
 
     <div class="grid">
         <div class="card">
-            <h3>Portfolio Overview</h3>
-            <p>Balance: $10,000.00</p>
-            <p>Equity: $10,000.00</p>
-            <p>Open Positions: 0</p>
+            <h3>Trade History</h3>
+            <div id="trades_container" style="max-height: 200px; overflow-y: auto; font-size: 0.9em;">
+                <p>No trades yet.</p>
+            </div>
         </div>
         <div class="card">
-            <h3>Risk Controls</h3>
-            <p>Daily Loss Limit: Active</p>
-            <p>Max Drawdown: 10%</p>
+            <h3>Live Action Logs</h3>
+            <div id="logs_container" style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.85em; background: #222; color: #0f0; padding: 10px; border-radius: 4px;">
+                Loading logs...
+            </div>
         </div>
         <div class="card">
-            <h3>Recent Signals</h3>
-            <p>No active signals.</p>
+            <h3>Settings</h3>
+            <div style="margin-bottom: 15px;">
+                <h4>MetaTrader 5 Connection</h4>
+                <input type="text" id="mt5_login" placeholder="Login ID" style="margin-bottom: 5px; width: 100%;"><br>
+                <input type="password" id="mt5_password" placeholder="Password" style="margin-bottom: 5px; width: 100%;"><br>
+                <input type="text" id="mt5_server" placeholder="Server" style="margin-bottom: 5px; width: 100%;"><br>
+                <button onclick="updateMT5()" style="padding: 5px 10px; cursor: pointer;">Connect MT5</button>
+            </div>
+
+            <div>
+                <h4>Trading Symbol</h4>
+                <input type="text" id="trade_symbol" placeholder="e.g. EURUSD" style="margin-bottom: 5px; width: 100%;"><br>
+                <button onclick="updateSymbol()" style="padding: 5px 10px; cursor: pointer;">Set Symbol</button>
+            </div>
         </div>
     </div>
+
+    <script>
+        async function fetchLogs() {
+            try {
+                const res = await fetch('/api/logs');
+                const logs = await res.json();
+                const container = document.getElementById('logs_container');
+                if (logs.length === 0) {
+                    container.innerHTML = "No logs yet.";
+                    return;
+                }
+                container.innerHTML = logs.map(l => `<div>[${l.level}] ${new Date(l.timestamp).toLocaleTimeString()} - <b>${l.module}</b>: ${l.message}</div>`).join('');
+            } catch (e) {
+                console.error("Failed to fetch logs", e);
+            }
+        }
+
+        async function fetchTrades() {
+            try {
+                const res = await fetch('/api/trades');
+                const trades = await res.json();
+                const container = document.getElementById('trades_container');
+                if (trades.length === 0) {
+                    container.innerHTML = "<p>No trades yet.</p>";
+                    return;
+                }
+                container.innerHTML = trades.map(t => `<div style="border-bottom: 1px solid #ccc; padding: 5px 0;"><b>${t.direction}</b> ${t.symbol} x${t.quantity} <span style="float:right; color: ${t.status==='OPEN' ? 'green' : 'gray'};">${t.status}</span></div>`).join('');
+            } catch (e) {
+                console.error("Failed to fetch trades", e);
+            }
+        }
+
+        setInterval(fetchLogs, 2000);
+        setInterval(fetchTrades, 5000);
+        fetchLogs();
+        fetchTrades();
+
+        async function updateMT5() {
+            const login = document.getElementById('mt5_login').value;
+            const password = document.getElementById('mt5_password').value;
+            const server = document.getElementById('mt5_server').value;
+
+            const res = await fetch('/api/config/mt5', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ login: parseInt(login), password, server })
+            });
+            const data = await res.json();
+            alert(data.message);
+        }
+
+        async function updateSymbol() {
+            const symbol = document.getElementById('trade_symbol').value;
+            const res = await fetch('/api/config/symbol', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol })
+            });
+            const data = await res.json();
+            alert(data.message);
+        }
+    </script>
 </body>
 </html>
