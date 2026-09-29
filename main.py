@@ -47,47 +47,6 @@ def log_trade(symbol: str, direction: str, quantity: float, status: str, entry_p
     finally:
         db.close()
 
-def calculate_account_risk_state() -> dict:
-    db = SessionLocal()
-    try:
-        # Calculate daily loss based on trades closed today
-        from datetime import datetime, timezone
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-
-        closed_trades = db.query(Trade).filter(Trade.status == "CLOSED").all()
-
-        daily_loss_sum = 0.0
-        peak_equity = settings.TRADE_ALLOCATION
-        current_equity = settings.TRADE_ALLOCATION
-
-        for t in closed_trades:
-            if t.pnl is not None:
-                current_equity += t.pnl
-                if current_equity > peak_equity:
-                    peak_equity = current_equity
-
-            if t.updated_at and t.updated_at.replace(tzinfo=timezone.utc) >= today_start:
-                if t.pnl is not None and t.pnl < 0:
-                    daily_loss_sum += abs(t.pnl)
-
-        drawdown_pct = 0.0
-        if peak_equity > 0:
-            drawdown_pct = (peak_equity - current_equity) / peak_equity
-
-        daily_loss_pct = 0.0
-        if current_equity > 0:
-            daily_loss_pct = daily_loss_sum / current_equity
-
-        return {
-            "daily_loss": daily_loss_pct,
-            "drawdown": drawdown_pct
-        }
-    except Exception as e:
-        log_event("ERROR", "RiskManager", f"Failed to calculate account state: {e}")
-        return {"daily_loss": 0.0, "drawdown": 0.0}
-    finally:
-        db.close()
-
 def has_open_position(symbol: str, direction: str) -> bool:
     db = SessionLocal()
     try:
@@ -99,24 +58,69 @@ def has_open_position(symbol: str, direction: str) -> bool:
     finally:
         db.close()
 
+def calculate_account_risk_state(adapter: MT5Adapter) -> dict:
+    # Fail-Closed by default. If we can't determine risk, return None.
+    if not adapter.mt5:
+        # Mock mode safe defaults since there's no real broker risk
+        return {"daily_loss": 0.0, "drawdown": 0.0}
+
+    try:
+        acc_info = adapter.mt5.account_info()
+        if not acc_info:
+            log_event("ERROR", "RiskManager", "Could not fetch MT5 account info.")
+            return None
+
+        current_equity = acc_info.equity
+        # For a truly robust system, peak_equity and daily_start_equity would be cached
+        # in a persistent DB to survive restarts. Here we use an approximation:
+        # Assume TRADE_ALLOCATION is the baseline for daily/drawdown checks.
+        peak_equity = max(settings.TRADE_ALLOCATION, current_equity)
+        daily_start_equity = settings.TRADE_ALLOCATION
+
+        drawdown_pct = 0.0
+        if peak_equity > 0:
+            drawdown_pct = (peak_equity - current_equity) / peak_equity
+
+        daily_loss_pct = 0.0
+        if current_equity < daily_start_equity:
+            daily_loss_pct = (daily_start_equity - current_equity) / daily_start_equity
+
+        return {
+            "daily_loss": daily_loss_pct,
+            "drawdown": drawdown_pct
+        }
+    except Exception as e:
+        log_event("ERROR", "RiskManager", f"Failed to calculate account state: {e}")
+        return None
+
 def manage_open_positions(current_price: float, data: list, strategy: StrategyEngine, adapter: MT5Adapter):
     db = SessionLocal()
     try:
         open_trades = db.query(Trade).filter(Trade.status == "OPEN").all()
         for trade in open_trades:
-            # MT5 Broker Reconciliation
-            # If the broker has already closed the trade (e.g. hit broker-side SL/TP),
-            # we must sync our local database to avoid an infinite loop of trying to close a dead trade.
-            if not adapter.position_exists(trade.trade_id):
+
+            # RECONCILIATION: Check if the broker already closed this position (e.g. SL/TP hit)
+            if not adapter.position_exists(trade.broker_position_id or trade.trade_id):
                 log_event("WARNING", "Reconciliation", f"Trade {trade.trade_id} missing on broker. Syncing local DB to CLOSED.")
                 trade.status = "CLOSED"
                 trade.exit_price = current_price # Approximate
-                # Note: In a real system, you'd fetch the exact PnL from MT5 history here.
+
+                # Fetch EXACT PnL from MT5 history deals
+                actual_pnl = 0.0
+                if adapter.mt5:
+                    from datetime import datetime, timedelta
+                    deals = adapter.mt5.history_deals_get(position=int(trade.broker_position_id or trade.trade_id))
+                    if deals:
+                        actual_pnl = sum([d.profit + d.commission + d.swap + d.fee for d in deals])
+
+                trade.pnl = actual_pnl
                 db.commit()
+                log_event("INFO", "Reconciliation", f"Trade {trade.trade_id} synced. Actual PnL: ${actual_pnl:.2f}")
                 continue
 
             close_trade = False
             pnl = 0.0
+            contract_size = 100.0 # XAUUSD
 
             # 1. Dynamic Early Exit check
             early_exit = strategy.check_early_exit(data, trade.direction)
@@ -134,7 +138,7 @@ def manage_open_positions(current_price: float, data: list, strategy: StrategyEn
                     log_event("INFO", "PositionManager", f"Take Profit hit for LONG {trade.symbol} at {current_price}")
 
                 if close_trade:
-                    pnl = (current_price - trade.entry_price) * trade.quantity
+                    pnl = (current_price - trade.entry_price) * trade.quantity * contract_size
 
             elif trade.direction == "SHORT":
                 if not close_trade and trade.stop_loss and current_price >= trade.stop_loss:
@@ -145,7 +149,7 @@ def manage_open_positions(current_price: float, data: list, strategy: StrategyEn
                     log_event("INFO", "PositionManager", f"Take Profit hit for SHORT {trade.symbol} at {current_price}")
 
                 if close_trade:
-                    pnl = (trade.entry_price - current_price) * trade.quantity
+                    pnl = (trade.entry_price - current_price) * trade.quantity * contract_size
 
             if close_trade:
                 # Transmit CLOSE order to broker
@@ -175,6 +179,19 @@ def run_trading_loop():
     ai = AIBrain(settings.AI_MODEL_NAME)
     risk_engine = RiskEngine()
 
+    # Establish connection once, outside the loop
+    connection_attempts = 0
+    while not adapter.connected and connection_attempts < 3:
+        if adapter.connect():
+            break
+        connection_attempts += 1
+        time.sleep(2)
+
+    if not adapter.connected:
+        log_event("ERROR", "MT5Adapter", "Failed to connect to MT5 after retries. Aborting thread.")
+        trading_state["active"] = False
+        return
+
     log_event("INFO", "TradingLoop", "Ready. Waiting for START signal from UI.")
 
     loop_count = 0
@@ -183,11 +200,10 @@ def run_trading_loop():
     while True:
         try:
             time.sleep(2) # check interval
-            if not trading_state.get("active", False):
-                continue
 
-            if not adapter.connect():
-                log_event("ERROR", "MT5Adapter", "Failed to connect to MT5. Check credentials in Settings.")
+            # Ensure we are still connected, but don't re-initialize fully if already connected
+            if not adapter.connected and not adapter.connect():
+                log_event("ERROR", "MT5Adapter", "Lost connection to MT5. Pausing trading.")
                 trading_state["active"] = False
                 continue
 
@@ -199,7 +215,12 @@ def run_trading_loop():
             current_candle_time = data[-1]['time']
 
             # 1. Manage existing positions with dynamic early exit logic
+            # We do this REGARDLESS of trading_state.active so we don't abandon open trades
             manage_open_positions(current_price, data, strategy, adapter)
+
+            # If trading is stopped by UI, skip opening new positions
+            if not trading_state.get("active", False):
+                continue
 
             # Periodic scan logging to show activity
             loop_count += 1
@@ -218,6 +239,15 @@ def run_trading_loop():
                     # Suppress spammy wait logs
                     pass
                 else:
+                    # 2.5 LIVE TRADING GUARD
+                    # Ensure we do not execute real trades if the app is explicitly in PAPER_TRADING mode
+                    if adapter.mt5:
+                        acc_info = adapter.mt5.account_info()
+                        if acc_info and acc_info.trade_mode == 2 and settings.TRADING_MODE != "LIVE_TRADING":
+                            log_event("ERROR", "SafetyGuard", "CRITICAL: Live MT5 account detected but TRADING_MODE is not LIVE_TRADING. Aborting execution.")
+                            trading_state["active"] = False
+                            continue
+
                     log_event("INFO", "Strategy", f"Signal: {candidates.get('direction')} | {candidates.get('reason')}")
 
                     direction = candidates.get('direction')
@@ -242,7 +272,11 @@ def run_trading_loop():
                         "side": decision["action"]
                     }
 
-                    account_state = calculate_account_risk_state()
+                    account_state = calculate_account_risk_state(adapter)
+
+                    if account_state is None:
+                        log_event("ERROR", "RiskEngine", "Risk state unavailable. Failsafe activated: NO TRADE.")
+                        continue
 
                     # ENFORCE RISK ENGINE
                     is_valid, reason = risk_engine.validate_trade(trade_proposal, account_state)
@@ -250,27 +284,19 @@ def run_trading_loop():
                         log_event("WARNING", "RiskEngine", f"REJECTED: {reason}")
                         continue
 
+                    # Calculate quantity based on UI Allocation and Leverage
+                    # Fix: For XAUUSD, standard MT5 contract is 100 oz per 1.0 lot.
+                    # Standard logic: (Allocation * Leverage) / (Price * Contract_Size)
+                    contract_size = 100.0 # Standard for Gold
+                    quantity = round((settings.TRADE_ALLOCATION * settings.MAX_LEVERAGE) / (current_price * contract_size), 2)
+
+                    # Prevent sending 0.0 volume to MT5
+                    if quantity <= 0:
+                        log_event("ERROR", "Execution", f"Calculated quantity ({quantity}) is invalid for Allocation ${settings.TRADE_ALLOCATION}")
+                        continue
+
                     sl = candidates.get("stop_loss")
                     tp = candidates.get("take_profit")
-
-                    # Calculate quantity based on TRUE Risk Sizing
-                    # Formula: Position Size = (Account Equity * Risk%) / (SL Distance * Contract Size * Tick Value)
-                    # For XAUUSD, Contract Size is usually 100.
-                    contract_size = 100.0
-
-                    if sl and sl != current_price:
-                        sl_distance = abs(current_price - sl)
-                        monetary_risk = settings.TRADE_ALLOCATION * settings.MAX_RISK_PER_TRADE
-                        # Leverage adjusts buying power, but risk is absolute dollars lost if SL is hit
-                        quantity = round(monetary_risk / (sl_distance * contract_size), 2)
-                    else:
-                        # Fallback to allocation-based leverage sizing if SL is missing
-                        quantity = round((settings.TRADE_ALLOCATION * settings.MAX_LEVERAGE) / (current_price * contract_size), 2)
-
-                    # Prevent sending 0.0 volume to MT5 (Min volume is usually 0.01)
-                    if quantity < 0.01:
-                        log_event("ERROR", "Execution", f"Calculated quantity ({quantity}) is below minimum 0.01 lot size.")
-                        continue
 
                     log_event("INFO", "Risk", f"Risk: {settings.MAX_RISK_PER_TRADE*100}% | Position: {quantity} | SL: {sl:.2f} | TP: {tp:.2f}")
 
@@ -289,16 +315,20 @@ def run_trading_loop():
                     if result.get("status") in ["SUBMITTED", "FILLED"]:
                         # Handle mock vs live order IDs
                         final_order_id = result.get("order_id", str(uuid.uuid4()))
+                        final_position_id = result.get("position_id", final_order_id)
+                        final_entry_price = result.get("fill_price", current_price)
 
                         db = SessionLocal()
                         try:
                             trade = Trade(
                                 trade_id=final_order_id,
+                                broker_order_id=final_order_id,
+                                broker_position_id=final_position_id,
                                 symbol=settings.DEFAULT_SYMBOL,
                                 direction=direction, # Correctly save LONG/SHORT instead of BUY/SELL
                                 quantity=quantity,
                                 status="OPEN",
-                                entry_price=candidates.get("entry_price", current_price),
+                                entry_price=final_entry_price,
                                 stop_loss=candidates.get("stop_loss"),
                                 take_profit=candidates.get("take_profit")
                             )

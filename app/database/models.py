@@ -6,6 +6,8 @@ class Trade(Base):
     __tablename__ = "trades"
     id = Column(Integer, primary_key=True, index=True)
     trade_id = Column(String, unique=True, index=True)
+    broker_order_id = Column(String, nullable=True, index=True)
+    broker_position_id = Column(String, nullable=True, index=True)
     symbol = Column(String, index=True)
     direction = Column(String)
     entry_price = Column(Float)

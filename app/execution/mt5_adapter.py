@@ -131,22 +131,33 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
         symbol_info = self.mt5.symbol_info(symbol)
         if symbol_info:
             filling_mode = symbol_info.filling_mode
-            # filling_mode is a bitmask.
-            # 1 = FOK, 2 = IOC, 3 = FOK/IOC (Both allowed)
             if filling_mode & self.mt5.SYMBOL_FILLING_FOK:
                 request["type_filling"] = self.mt5.ORDER_FILLING_FOK
             elif filling_mode & self.mt5.SYMBOL_FILLING_IOC:
                 request["type_filling"] = self.mt5.ORDER_FILLING_IOC
             else:
-                # Fallback to RETURN if supported or just default
                 request["type_filling"] = self.mt5.ORDER_FILLING_RETURN
+
+        # Pre-trade check
+        check_result = self.mt5.order_check(request)
+        if not check_result or check_result.retcode != self.mt5.TRADE_RETCODE_DONE:
+            err = check_result.comment if check_result else "order_check failed entirely"
+            ret = check_result.retcode if check_result else 0
+            logger.error(f"Order check failed: {ret} - {err}")
+            return {"status": "REJECTED", "error": err, "retcode": ret}
 
         result = self.mt5.order_send(request)
         if result.retcode != self.mt5.TRADE_RETCODE_DONE:
             logger.error(f"Order send failed: {result.retcode} - {result.comment}")
             return {"status": "REJECTED", "error": result.comment, "retcode": result.retcode}
 
-        return {"status": "FILLED", "order_id": str(result.order)}
+        # The true position ID might be mapped from the deal rather than just result.order
+        return {
+            "status": "FILLED",
+            "order_id": str(result.order),
+            "position_id": str(result.deal) if hasattr(result, 'deal') and result.deal else str(result.order),
+            "fill_price": result.price
+        }
 
     def cancel_order(self, order_id: str) -> bool:
         if not self.mt5:
@@ -195,20 +206,15 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             "type_filling": self.mt5.ORDER_FILLING_IOC,
         }
 
-        # Dynamically determine the correct Filling Mode for the Symbol
-        symbol_info = self.mt5.symbol_info(symbol)
-        if symbol_info:
-            filling_mode = symbol_info.filling_mode
-            if filling_mode & self.mt5.SYMBOL_FILLING_FOK:
-                request["type_filling"] = self.mt5.ORDER_FILLING_FOK
-            elif filling_mode & self.mt5.SYMBOL_FILLING_IOC:
-                request["type_filling"] = self.mt5.ORDER_FILLING_IOC
-            else:
-                request["type_filling"] = self.mt5.ORDER_FILLING_RETURN
-
         result = self.mt5.order_send(request)
         if result.retcode != self.mt5.TRADE_RETCODE_DONE:
             logger.error(f"Position close failed: {result.retcode}")
             return {"status": "ERROR", "error": result.comment}
 
-        return {"status": "CLOSED", "order_id": str(result.order)}
+        # The true position ID might be mapped from the deal rather than just result.order
+        return {
+            "status": "CLOSED",
+            "order_id": str(result.order),
+            "position_id": str(result.deal) if hasattr(result, 'deal') and result.deal else str(result.order),
+            "fill_price": result.price
+        }
