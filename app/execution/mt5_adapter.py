@@ -88,7 +88,8 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
     def submit_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         if not self.mt5:
             logger.info(f"MOCK MT5 submit_order: {order}")
-            return {"status": "SUBMITTED", "order_id": "mock_mt5_123"}
+            import uuid
+            return {"status": "SUBMITTED", "order_id": f"mock_mt5_{uuid.uuid4().hex[:8]}"}
 
         # Simplified order submission logic for MT5
         symbol = order.get("symbol")
@@ -126,10 +127,24 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
         else:
             logger.warning(f"Could not fetch live tick for {symbol}. Order may fail.")
 
+        # Dynamically determine the correct Filling Mode for the Symbol
+        symbol_info = self.mt5.symbol_info(symbol)
+        if symbol_info:
+            filling_mode = symbol_info.filling_mode
+            # filling_mode is a bitmask.
+            # 1 = FOK, 2 = IOC, 3 = FOK/IOC (Both allowed)
+            if filling_mode & self.mt5.SYMBOL_FILLING_FOK:
+                request["type_filling"] = self.mt5.ORDER_FILLING_FOK
+            elif filling_mode & self.mt5.SYMBOL_FILLING_IOC:
+                request["type_filling"] = self.mt5.ORDER_FILLING_IOC
+            else:
+                # Fallback to RETURN if supported or just default
+                request["type_filling"] = self.mt5.ORDER_FILLING_RETURN
+
         result = self.mt5.order_send(request)
         if result.retcode != self.mt5.TRADE_RETCODE_DONE:
-            logger.error(f"Order send failed: {result.retcode}")
-            return {"status": "REJECTED", "error": result.comment}
+            logger.error(f"Order send failed: {result.retcode} - {result.comment}")
+            return {"status": "REJECTED", "error": result.comment, "retcode": result.retcode}
 
         return {"status": "FILLED", "order_id": str(result.order)}
 
@@ -138,6 +153,18 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             logger.info(f"MOCK MT5 cancel_order: {order_id}")
             return True
         return False
+
+    def position_exists(self, position_id: str) -> bool:
+        """Checks if a specific position ticket still exists on the broker."""
+        if not self.mt5:
+            # In mock mode, we assume the position exists until we manually close it
+            return True
+
+        if not position_id.isdigit():
+            return False
+
+        positions = self.mt5.positions_get(ticket=int(position_id))
+        return positions is not None and len(positions) > 0
 
     def close_position(self, symbol: str, position_id: str, side: str, volume: float) -> Dict[str, Any]:
         """Closes an open position by sending an opposing market order."""
@@ -167,6 +194,17 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             "type_time": self.mt5.ORDER_TIME_GTC,
             "type_filling": self.mt5.ORDER_FILLING_IOC,
         }
+
+        # Dynamically determine the correct Filling Mode for the Symbol
+        symbol_info = self.mt5.symbol_info(symbol)
+        if symbol_info:
+            filling_mode = symbol_info.filling_mode
+            if filling_mode & self.mt5.SYMBOL_FILLING_FOK:
+                request["type_filling"] = self.mt5.ORDER_FILLING_FOK
+            elif filling_mode & self.mt5.SYMBOL_FILLING_IOC:
+                request["type_filling"] = self.mt5.ORDER_FILLING_IOC
+            else:
+                request["type_filling"] = self.mt5.ORDER_FILLING_RETURN
 
         result = self.mt5.order_send(request)
         if result.retcode != self.mt5.TRADE_RETCODE_DONE:

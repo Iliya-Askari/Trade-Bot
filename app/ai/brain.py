@@ -16,16 +16,28 @@ class AIBrain:
         # Advanced Validation: Risk/Reward check based on dynamic ATR stops
         rr = candidates.get("risk_reward_ratio", 0)
 
-        if rr < 2.0:
+        # We use 1.99 to avoid float precision issues incorrectly rejecting perfect 2.0 R/R setups
+        if rr < 1.99:
             return {
                 "action": "NO_TRADE",
                 "reasoning_summary": f"Rejected by AI: Risk/Reward ratio of {rr:.2f} is below the strict 1:2 minimum threshold."
             }
 
+        raw_confidence = candidates.get("confidence", 0.5) * 1.2 # AI boosts confidence based on 'context'
+        final_confidence = max(0.0, min(1.0, raw_confidence)) # Clamp between 0 and 1
+
+        # Hard confidence threshold check
+        threshold = 0.70
+        if final_confidence < threshold:
+            return {
+                "action": "NO_TRADE",
+                "reasoning_summary": f"Rejected by AI: Confidence ({final_confidence:.2f}) below threshold ({threshold:.2f})."
+            }
+
         # Simplified AI evaluation
         return {
             "action": "BUY" if direction == "LONG" else "SELL",
-            "confidence": candidates.get("confidence", 0.5) * 1.2, # AI boosts confidence based on 'context'
+            "confidence": final_confidence,
             "reasoning_summary": f"AI confirms {direction} setup via {self.model_name}. R/R ratio verified ({rr:.2f}).",
             "expected_value": 0.05
         }
