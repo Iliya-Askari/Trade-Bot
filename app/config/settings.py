@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     MAX_DAILY_LOSS: float = 0.05
     MAX_DRAWDOWN: float = 0.10
     MAX_LEVERAGE: float = 1.0
+    TRADE_ALLOCATION: float = 1000.0 # Dollar amount to allocate per trade
 
     # AI Config
     AI_MODEL_PROVIDER: str = "local"

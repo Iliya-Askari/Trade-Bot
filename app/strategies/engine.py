@@ -17,6 +17,8 @@ class StrategyEngine:
         df = pd.DataFrame(data)
 
         # Calculate Indicators using pandas-ta
+        df.ta.ema(length=9, append=True)
+        df.ta.ema(length=21, append=True)
         df.ta.ema(length=50, append=True)
         df.ta.ema(length=200, append=True)
         df.ta.rsi(length=14, append=True)
@@ -25,7 +27,7 @@ class StrategyEngine:
         latest = df.iloc[-1]
 
         # We need the columns to exist, if they don't, return NO_TRADE
-        if 'EMA_50' not in df.columns or 'EMA_200' not in df.columns or 'RSI_14' not in df.columns or 'ATRr_14' not in df.columns:
+        if 'EMA_50' not in df.columns or 'EMA_200' not in df.columns or 'RSI_14' not in df.columns or 'ATRr_14' not in df.columns or 'EMA_9' not in df.columns or 'EMA_21' not in df.columns:
             return {"status": "NO_TRADE", "reason": "Indicators failed to calculate."}
 
         ema_50 = latest['EMA_50']
@@ -69,3 +71,33 @@ class StrategyEngine:
             }
 
         return {"status": "WAIT", "reason": f"No signal. RSI: {rsi:.2f}, EMA50: {ema_50:.2f}, EMA200: {ema_200:.2f}"}
+
+    def check_early_exit(self, data: List[Dict[str, Any]], direction: str) -> bool:
+        """
+        Dynamically checks if a trade should be exited early to cut losses.
+        Uses 9 EMA and 21 EMA crossovers to detect trend invalidation.
+        """
+        if not data or len(data) < 21:
+            return False
+
+        df = pd.DataFrame(data)
+        df.ta.ema(length=9, append=True)
+        df.ta.ema(length=21, append=True)
+
+        if 'EMA_9' not in df.columns or 'EMA_21' not in df.columns:
+            return False
+
+        latest = df.iloc[-1]
+        previous = df.iloc[-2]
+
+        # If we are LONG, and 9 EMA crosses BELOW 21 EMA, trend is dying. Exit early.
+        if direction == "LONG":
+            if previous['EMA_9'] >= previous['EMA_21'] and latest['EMA_9'] < latest['EMA_21']:
+                return True
+
+        # If we are SHORT, and 9 EMA crosses ABOVE 21 EMA, trend is dying. Exit early.
+        elif direction == "SHORT":
+            if previous['EMA_9'] <= previous['EMA_21'] and latest['EMA_9'] > latest['EMA_21']:
+                return True
+
+        return False
