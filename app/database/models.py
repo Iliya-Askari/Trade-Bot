@@ -6,6 +6,9 @@ class Trade(Base):
     __tablename__ = "trades"
     id = Column(Integer, primary_key=True, index=True)
     trade_id = Column(String, unique=True, index=True)
+    broker_order_id = Column(String, nullable=True, index=True)
+    broker_deal_id = Column(String, nullable=True, index=True)
+    broker_position_id = Column(String, nullable=True, index=True)
     symbol = Column(String, index=True)
     direction = Column(String)
     entry_price = Column(Float)
@@ -14,6 +17,12 @@ class Trade(Base):
     take_profit = Column(Float, nullable=True)
     quantity = Column(Float)
     status = Column(String) # OPEN, CLOSED
+
+    # Telemetry
+    requested_price = Column(Float, nullable=True)
+    slippage = Column(Float, nullable=True)
+    retcode = Column(Integer, nullable=True)
+    broker_comment = Column(String, nullable=True)
     pnl = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -67,3 +76,10 @@ class SystemEvent(Base):
     level = Column(String) # INFO, WARNING, ERROR
     module = Column(String)
     message = Column(String)
+
+class AccountSnapshot(Base):
+    __tablename__ = "account_snapshots"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    day_start_equity = Column(Float)
+    peak_equity = Column(Float)
