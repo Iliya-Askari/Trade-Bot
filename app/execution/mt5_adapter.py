@@ -42,6 +42,13 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
                 logger.error(f"MT5 login failed, error code: {self.mt5.last_error()}")
                 return False
 
+        # LIVE TRADING SAFETY GUARD
+        acc_info = self.mt5.account_info()
+        if acc_info:
+            if settings.TRADING_MODE != "LIVE_TRADING" and acc_info.trade_mode == self.mt5.ACCOUNT_TRADE_MODE_REAL:
+                logger.error("CRITICAL: Connected to a REAL MT5 account, but TRADING_MODE is not LIVE_TRADING. Aborting connection to prevent accidental real money loss.")
+                return False
+
         self.connected = True
         return True
 
@@ -86,18 +93,22 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
         ]
 
     def submit_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.mt5:
-            logger.info(f"MOCK MT5 submit_order: {order}")
-            import uuid
+        import uuid
+        if not self.mt5 or settings.TRADING_MODE == "PAPER_TRADING":
+            logger.info(f"PAPER/MOCK MT5 submit_order: {order}")
             return {"status": "SUBMITTED", "order_id": f"mock_mt5_{uuid.uuid4().hex[:8]}"}
 
         # Simplified order submission logic for MT5
         symbol = order.get("symbol")
         volume = order.get("quantity")
-        side = order.get("side") # "BUY" or "SELL"
+        side = order.get("side", "").upper()
         price = order.get("price")
         sl = order.get("stop_loss")
         tp = order.get("take_profit")
+
+        if side not in ["BUY", "SELL"]:
+            logger.error(f"Invalid order side: {side}. Aborting.")
+            return {"status": "REJECTED", "error": "Invalid order side"}
 
         type_dict = {
             "BUY": self.mt5.ORDER_TYPE_BUY,
@@ -108,7 +119,7 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             "action": self.mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
             "volume": float(volume),
-            "type": type_dict.get(side.upper(), self.mt5.ORDER_TYPE_BUY),
+            "type": type_dict[side],
             "price": float(price) if price else 0.0,
             "sl": float(sl) if sl else 0.0,
             "tp": float(tp) if tp else 0.0,
@@ -151,12 +162,22 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             logger.error(f"Order send failed: {result.retcode} - {result.comment}")
             return {"status": "REJECTED", "error": result.comment, "retcode": result.retcode}
 
-        # The true position ID might be mapped from the deal rather than just result.order
+        # Get true position ID using history_deals_get, mapping deal -> position
+        position_ticket = str(result.order)
+        if hasattr(result, 'deal') and result.deal:
+            deals = self.mt5.history_deals_get(ticket=result.deal)
+            if deals and len(deals) > 0 and hasattr(deals[0], 'position_id'):
+                position_ticket = str(deals[0].position_id)
+            else:
+                position_ticket = str(result.deal)
+
         return {
             "status": "FILLED",
             "order_id": str(result.order),
-            "position_id": str(result.deal) if hasattr(result, 'deal') and result.deal else str(result.order),
-            "fill_price": result.price
+            "position_id": position_ticket,
+            "fill_price": result.price,
+            "retcode": result.retcode,
+            "comment": result.comment
         }
 
     def cancel_order(self, order_id: str) -> bool:
@@ -165,8 +186,14 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             return True
         return False
 
-    def position_exists(self, position_id: str) -> bool:
-        """Checks if a specific position ticket still exists on the broker."""
+    def position_exists(self, position_id: str) -> bool | None:
+        """
+        Checks if a specific position ticket still exists on the broker.
+        Returns:
+            True: Position explicitly exists.
+            False: Position explicitly does not exist.
+            None: Unknown state (e.g. MT5 error or disconnected).
+        """
         if not self.mt5:
             # In mock mode, we assume the position exists until we manually close it
             return True
@@ -175,13 +202,27 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             return False
 
         positions = self.mt5.positions_get(ticket=int(position_id))
-        return positions is not None and len(positions) > 0
+
+        # If positions_get returns None, it indicates a failure to fetch data from MT5
+        # NOT that the position is absent. We must return None (Unknown) for safety.
+        if positions is None:
+            last_err = self.mt5.last_error()
+            logger.error(f"MT5 positions_get failed for ticket {position_id}. Error: {last_err}")
+            return None
+
+        return len(positions) > 0
 
     def close_position(self, symbol: str, position_id: str, side: str, volume: float) -> Dict[str, Any]:
         """Closes an open position by sending an opposing market order."""
-        if not self.mt5:
-            logger.info(f"MOCK MT5 close_position: {position_id}")
-            return {"status": "CLOSED", "order_id": "mock_close_123"}
+        import uuid
+        if not self.mt5 or settings.TRADING_MODE == "PAPER_TRADING":
+            logger.info(f"PAPER/MOCK MT5 close_position: {position_id}")
+            return {"status": "CLOSED", "order_id": f"mock_close_{uuid.uuid4().hex[:8]}"}
+
+        # Guard against invalid position IDs closing entire symbols
+        if not position_id or not position_id.isdigit() or int(position_id) == 0:
+            logger.error(f"Cannot close position with invalid ID: {position_id}")
+            return {"status": "ERROR", "error": "Invalid position ID"}
 
         # Get actual tick price for closing
         tick = self.mt5.symbol_info_tick(symbol)
@@ -197,7 +238,7 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             "symbol": symbol,
             "volume": float(volume),
             "type": close_type,
-            "position": int(position_id) if position_id.isdigit() else 0, # Pass ticket ID if valid
+            "position": int(position_id),
             "price": price,
             "deviation": 20,
             "magic": 234000,

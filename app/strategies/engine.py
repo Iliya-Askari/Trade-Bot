@@ -14,6 +14,29 @@ class StrategyEngine:
         if not data or len(data) < 200:
             return {"status": "NO_DATA", "reason": "Not enough data for EMAs (need 200+ candles)."}
 
+        # Market Data Freshness Validation
+        from datetime import datetime, timezone
+        import dateutil.parser
+
+        latest_candle = data[-1]
+        try:
+            # Handle both string ISO formats and numeric timestamps
+            if isinstance(latest_candle['time'], str):
+                candle_time = dateutil.parser.isoparse(latest_candle['time'])
+            else:
+                candle_time = datetime.fromtimestamp(latest_candle['time'], tz=timezone.utc)
+
+            # If the candle is older than 2 hours (assuming H1 max gap), fail closed
+            if (datetime.now(timezone.utc) - candle_time).total_seconds() > 7200:
+                return {"status": "NO_DATA", "reason": f"Stale market data. Last candle at {candle_time}."}
+
+            # Check for abnormal spreads or zero values
+            if latest_candle.get('close', 0) <= 0 or latest_candle.get('high', 0) < latest_candle.get('low', 0):
+                return {"status": "NO_DATA", "reason": "Invalid OHLC values detected."}
+
+        except Exception as e:
+            return {"status": "NO_DATA", "reason": f"Error validating data freshness: {e}"}
+
         df = pd.DataFrame(data)
 
         # Calculate Indicators using pandas-ta
