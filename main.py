@@ -139,11 +139,14 @@ def manage_open_positions(current_price: float, data: list, strategy: StrategyEn
 
                 # Fetch EXACT PnL from MT5 history deals
                 actual_pnl = 0.0
-                if adapter.mt5:
-                    from datetime import datetime, timedelta
-                    deals = adapter.mt5.history_deals_get(position=int(trade.broker_position_id or trade.trade_id))
-                    if deals:
-                        actual_pnl = sum([d.profit + d.commission + d.swap + d.fee for d in deals])
+                if adapter.mt5 and settings.TRADING_MODE != "PAPER_TRADING":
+                    from datetime import datetime, timedelta, timezone
+                    trade.closed_at = datetime.now(timezone.utc)
+                    pos_id = trade.broker_position_id or trade.trade_id
+                    if pos_id and pos_id.isdigit():
+                        deals = adapter.mt5.history_deals_get(position=int(pos_id))
+                        if deals:
+                            actual_pnl = sum([d.profit + d.commission + d.swap + d.fee for d in deals])
 
                 trade.pnl = actual_pnl
                 db.commit()
@@ -190,7 +193,10 @@ def manage_open_positions(current_price: float, data: list, strategy: StrategyEn
 
             if close_trade:
                 # Transmit CLOSE order to broker
-                close_res = adapter.close_position(symbol=trade.symbol, position_id=trade.trade_id, side=trade.direction, volume=trade.quantity)
+                # Use broker_position_id if it exists, otherwise fallback to trade_id (e.g. mock/paper IDs)
+                # This ensures mapped orphan positions (which use trade_id="orphan_...") can still be closed properly via broker_position_id.
+                target_pos_id = trade.broker_position_id or trade.trade_id
+                close_res = adapter.close_position(symbol=trade.symbol, position_id=target_pos_id, side=trade.direction, volume=trade.quantity)
 
                 if close_res.get("status") == "CLOSED":
                     trade.status = "CLOSED"
@@ -199,9 +205,13 @@ def manage_open_positions(current_price: float, data: list, strategy: StrategyEn
                     # Do NOT use simplistic math. Use authoritative MT5 history if available.
                     actual_pnl = None
                     if adapter.mt5 and settings.TRADING_MODE != "PAPER_TRADING":
-                        deals = adapter.mt5.history_deals_get(position=int(trade.broker_position_id or trade.trade_id))
-                        if deals:
-                            actual_pnl = sum([d.profit + d.commission + d.swap + d.fee for d in deals])
+                        from datetime import datetime, timezone
+                        trade.closed_at = datetime.now(timezone.utc)
+                        pos_id = trade.broker_position_id or trade.trade_id
+                        if pos_id and pos_id.isdigit():
+                            deals = adapter.mt5.history_deals_get(position=int(pos_id))
+                            if deals:
+                                actual_pnl = sum([d.profit + d.commission + d.swap + d.fee for d in deals])
 
                     if actual_pnl is not None:
                         trade.pnl = actual_pnl
@@ -357,7 +367,7 @@ def run_trading_loop():
                     # Ensure we do not execute real trades if the app is explicitly in PAPER_TRADING mode
                     if adapter.mt5:
                         acc_info = adapter.mt5.account_info()
-                        if acc_info and acc_info.trade_mode == 2 and settings.TRADING_MODE != "LIVE_TRADING":
+                        if acc_info and acc_info.trade_mode == adapter.mt5.ACCOUNT_TRADE_MODE_REAL and settings.TRADING_MODE != "LIVE_TRADING":
                             log_event("ERROR", "SafetyGuard", "CRITICAL: Live MT5 account detected but TRADING_MODE is not LIVE_TRADING. Aborting execution.")
                             trading_state["active"] = False
                             continue

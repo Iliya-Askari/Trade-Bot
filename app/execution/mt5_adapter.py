@@ -28,11 +28,16 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             self.connected = True
             return True
 
-        if not self.mt5.initialize():
-            logger.error(f"MT5 initialize() failed, error code: {self.mt5.last_error()}")
-            return False
-
+        # Pass credentials directly to initialize() if available, to prevent Authorization failed (-6)
         if settings.MT5_LOGIN and settings.MT5_PASSWORD and settings.MT5_SERVER:
+            if not self.mt5.initialize(
+                login=settings.MT5_LOGIN,
+                password=settings.MT5_PASSWORD,
+                server=settings.MT5_SERVER
+            ):
+                logger.error(f"MT5 initialize(with credentials) failed, error code: {self.mt5.last_error()}")
+                return False
+
             authorized = self.mt5.login(
                 login=settings.MT5_LOGIN,
                 password=settings.MT5_PASSWORD,
@@ -41,6 +46,11 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             if not authorized:
                 logger.error(f"MT5 login failed, error code: {self.mt5.last_error()}")
                 return False
+        else:
+            if not self.mt5.initialize():
+                logger.error(f"MT5 initialize() failed, error code: {self.mt5.last_error()}")
+                return False
+            authorized = True
 
         # LIVE TRADING SAFETY GUARD
         acc_info = self.mt5.account_info()
@@ -194,8 +204,8 @@ class MT5Adapter(ExecutionProvider, MarketDataProvider):
             False: Position explicitly does not exist.
             None: Unknown state (e.g. MT5 error or disconnected).
         """
-        if not self.mt5:
-            # In mock mode, we assume the position exists until we manually close it
+        if not self.mt5 or settings.TRADING_MODE == "PAPER_TRADING":
+            # In mock/paper mode, we assume the position exists until we manually close it
             return True
 
         if not position_id.isdigit():

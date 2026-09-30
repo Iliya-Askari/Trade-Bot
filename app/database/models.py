@@ -26,6 +26,7 @@ class Trade(Base):
     pnl = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
 
 class Order(Base):
     __tablename__ = "orders"

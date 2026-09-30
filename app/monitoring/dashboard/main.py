@@ -34,8 +34,18 @@ trading_state = {"active": False}
 async def health_check():
     return {"status": "HEALTHY"}
 
+# Security/CSRF Protection for dangerous endpoints
+from fastapi import Request, HTTPException
+
+def verify_csrf_header(request: Request):
+    # Enforce application/json to trigger CORS preflight on browsers, preventing simple CSRF form posts
+    content_type = request.headers.get("content-type", "")
+    if "application/json" not in content_type.lower():
+        raise HTTPException(status_code=403, detail="Invalid Content-Type for state modifying request. CSRF blocked.")
+
 @dashboard_app.post("/api/trading/start")
-async def start_trading():
+async def start_trading(request: Request):
+    verify_csrf_header(request)
     trading_state["active"] = True
     from app.database.session import SessionLocal
     from app.database.models import SystemEvent
@@ -48,7 +58,8 @@ async def start_trading():
     return {"status": "success", "message": "Trading loop activated."}
 
 @dashboard_app.post("/api/trading/stop")
-async def stop_trading():
+async def stop_trading(request: Request):
+    verify_csrf_header(request)
     trading_state["active"] = False
     from app.database.session import SessionLocal
     from app.database.models import SystemEvent
@@ -65,7 +76,8 @@ async def get_trading_status():
     return {"active": trading_state["active"]}
 
 @dashboard_app.post("/api/config/mt5")
-async def update_mt5_config(config: MT5ConfigUpdate):
+async def update_mt5_config(config: MT5ConfigUpdate, request: Request):
+    verify_csrf_header(request)
     settings.MT5_LOGIN = config.login
     settings.MT5_PASSWORD = config.password
     settings.MT5_SERVER = config.server

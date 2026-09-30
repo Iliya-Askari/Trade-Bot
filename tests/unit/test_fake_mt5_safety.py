@@ -8,16 +8,38 @@ def fake_mt5():
     return FakeMT5()
 
 @pytest.fixture
-def adapter(fake_mt5):
+def adapter(fake_mt5, monkeypatch):
     adapter = MT5Adapter()
     adapter.mt5 = fake_mt5
     adapter.connected = True
+    monkeypatch.setattr(settings, "TRADING_MODE", "LIVE_TRADING")
     return adapter
 
 def test_paper_trading_guard(adapter, monkeypatch):
     monkeypatch.setattr(settings, "TRADING_MODE", "PAPER_TRADING")
-    # Verify adapter operates safely (e.g. mocking behavior in PAPER mode)
-    pass
+
+    order = {
+        "symbol": "EURUSD",
+        "side": "BUY",
+        "quantity": 1.5,
+        "price": 1.1000
+    }
+
+    # 1. The submit_order function must return a mocked response
+    res = adapter.submit_order(order)
+    assert res["status"] == "SUBMITTED"
+    assert "mock" in res["order_id"].lower()
+
+    # 2. No actual order should reach the FakeMT5 broker tracking
+    assert len(adapter.mt5.active_positions) == 0
+
+    # 3. Position exists must return True for string IDs during paper trading
+    assert adapter.position_exists(res["order_id"]) is True
+
+    # 4. Closing should generate a mock close response
+    close_res = adapter.close_position(symbol="EURUSD", position_id=res["order_id"], volume=1.5, side="LONG")
+    assert close_res["status"] == "CLOSED"
+    assert "mock" in close_res["order_id"].lower()
 
 def test_tri_state_position_exists(adapter, fake_mt5):
     # Setup open position
